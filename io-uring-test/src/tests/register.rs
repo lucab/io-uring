@@ -1,5 +1,6 @@
 use crate::Test;
-use io_uring::{cqueue, opcode, squeue, IoUring};
+use io_uring::{cqueue, opcode, squeue, types, IoUring};
+use std::os::fd::AsRawFd;
 
 pub fn test_register_files_sparse<S: squeue::EntryMarker, C: cqueue::EntryMarker>(
     ring: &mut IoUring<S, C>,
@@ -65,6 +66,50 @@ pub fn test_register_files_sparse<S: squeue::EntryMarker, C: cqueue::EntryMarker
             e
         ));
     }
+
+    Ok(())
+}
+
+pub fn test_register_files_with_tags<S: squeue::EntryMarker, C: cqueue::EntryMarker>(
+    ring: &mut IoUring<S, C>,
+    test: &Test,
+) -> anyhow::Result<()> {
+    require!(
+        test;
+        // FIXME
+        test.probe.is_supported(opcode::UringCmd16::CODE);
+    );
+
+    let p = ring.params();
+    assert_eq!(p.is_feature_resource_tagging(), true);
+
+    println!("test register_files_with_tags");
+
+    let tmp1 = tempfile::tempfile()?;
+    let tmp1_fd = types::Fd(tmp1.as_raw_fd());
+    let tmp2 = tempfile::tempfile()?;
+    let tmp2_fd = types::Fd(tmp2.as_raw_fd());
+
+    let tagging = [(tmp1_fd, 11), (tmp2_fd, 22)];
+    ring.submitter().register_files_with_tags(&tagging).unwrap();
+    // Try to register the files again, this should fail with -EBUSY.
+    ring.submitter().register_files_with_tags(&tagging).unwrap_err();
+
+    // Remove fixed file on the ring. This should generate two "unregister"
+    // events, one for each tagged FD.
+    ring.submitter().unregister_files().unwrap();
+    drop(tmp1);
+    drop(tmp2);
+    // Try to remove again, this should fail with -ENXIO.
+    //ring.submitter().unregister_files().unwrap_err();
+
+    //ring.submit_and_wait(1)?;
+    let dest_cqes: Vec<cqueue::Entry> = ring.completion().map(Into::into).collect();
+    assert_eq!(dest_cqes.len(), 2);
+    assert_eq!(dest_cqes[0].user_data(), 11);
+    assert_eq!(dest_cqes[0].result(), 0);
+    assert_eq!(dest_cqes[0].flags(), 0);
+
 
     Ok(())
 }

@@ -221,6 +221,39 @@ impl<'a> Submitter<'a> {
         .map(drop)
     }
 
+    /// Register files for I/O. You can use the registered files with
+    /// [`Fixed`](crate::types::Fixed).
+    ///
+    /// Each fd may be -1, in which case it is considered "sparse", and can be filled in later with
+    /// [`register_files_update`](Self::register_files_update).
+    ///
+    /// Note that this will wait for the ring to idle; it will only return once all active requests
+    /// are complete. Use [`register_files_update`](Self::register_files_update) to avoid this.
+    pub fn register_files_with_tags(&self, files: &[(types::Fd, u64)]) -> io::Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let nr = files.len() as u32;
+        let (fds, tags): (Vec<_>, Vec<_>) =
+            files.iter().copied().map(|(f, t)| (f.0 as i32, t)).unzip();
+        let rr = sys::io_uring_rsrc_register {
+            data: fds.as_slice().as_ptr() as _,
+            tags: tags.as_slice().as_ptr() as _,
+            nr,
+            flags: 0,
+            resv2: 0,
+        };
+        let rr = cast_ptr::<sys::io_uring_rsrc_register>(&rr);
+        execute(
+            self.fd.as_raw_fd(),
+            sys::IORING_REGISTER_FILES2,
+            rr as *const _,
+            std::mem::size_of::<sys::io_uring_rsrc_register>() as _,
+        )
+        .map(drop)
+    }
+
     /// This operation replaces existing files in the registered file set with new ones,
     /// either turning a sparse entry (one where fd is equal to -1) into a real one, removing an existing entry (new one is set to -1),
     /// or replacing an existing entry with a new existing entry. The `offset` parameter specifies
